@@ -21,6 +21,7 @@ This guide provides a step-by-step walkthrough for setting up a **FLOP Network V
   * The validator onboarding package flow (`pnpm onboard prepare → join → verify`).
   * The GPU miner's flop CLI, keystore, sponsorship, model fetch, `.env` template and Docker Compose run.
   * Useful commands and troubleshooting tables for both roles.
+  * Migrating your validator (or miner) to a new server without changing keys or fingerprint.
 ### By following this guide you'll understand the full operator flow and be ready to move fast when testnet onboarding opens.
 
 
@@ -286,6 +287,84 @@ pnpm onboard verify
 "Ready" doesn't mean "active". You need babe/audi/alp0 session keys plus advancing finality. Run this **after** ops confirms activation — not right after prepare.
 
 
+
+
+### Migrating the Validator to a New Server
+Use this when moving your validator to another VPS (better specs, cheaper host, etc.). The goal is to carry over the **same keys, config and host SSH key**, so your SS58 address and `SHA256:` fingerprint stay identical.
+
+> ⚠️ **Read first**
+> - **Never run the validator on both servers at once** with the same keys. Old server stops first, and stays stopped.
+> - If ops is already enrolling or has enrolled you, **tell your ops contact before moving**. The IP changes, and they verify the host key on their side.
+> - The backup contains **private keys**. Never upload it anywhere, never paste it in chat, delete it after the move.
+
+### What gets copied
+| Item | Path | Why |
+|---|---|---|
+| Validator package, `account.json`, `.env`, keystore, data | `~/flop` (e.g. `/root/flop`) | Your validator identity and config |
+| Host SSH key pair | `/etc/ssh/ssh_host_ed25519_key` + `.pub` | Keeps the same `SHA256:` fingerprint ops confirmed |
+
+**Not copied:** Docker, Node, pnpm, `age`, Tailscale, firewall rules. Reinstall those on the new server (Section 1️⃣).
+
+### Step 1: On the OLD server, stop and bundle
+```
+cd ~/flop/validator-cs-be91fe83 && docker compose down 2>/dev/null
+tar czf /root/validator-backup.tgz \
+  /root/flop \
+  /etc/ssh/ssh_host_ed25519_key /etc/ssh/ssh_host_ed25519_key.pub
+sha256sum /root/validator-backup.tgz
+```
+
+### Step 2: On the NEW server, pull it over SSH
+Run these as **separate lines** (not on one line):
+```
+scp root@OLD_SERVER_IP:/root/validator-backup.tgz /root/
+sha256sum /root/validator-backup.tgz
+```
+The hash must match the old server's exactly. Or let the server check it for you:
+```
+[ "$(ssh root@OLD_SERVER_IP sha256sum /root/validator-backup.tgz | cut -d' ' -f1)" = "$(sha256sum /root/validator-backup.tgz | cut -d' ' -f1)" ] && echo MATCH || echo MISMATCH
+```
+`MISMATCH` = delete the copy and `scp` again.
+
+### Step 3: On the NEW server, restore
+### CHANGE *XXXXXX* TO THE SAME HOSTNAME YOU USED BEFORE
+```
+tar xzf /root/validator-backup.tgz -C /
+chmod 600 /etc/ssh/ssh_host_ed25519_key
+chmod 644 /etc/ssh/ssh_host_ed25519_key.pub
+sudo hostnamectl set-hostname xxxxxx
+systemctl restart ssh
+```
+> Your SSH client will warn that the host key for the new IP is already known for another host. That's expected, since you moved the key on purpose.
+
+### Step 4: Reinstall tools and check
+Install Docker, Node 24, pnpm 12.14.0 and `age` exactly as in Section 1️⃣, then:
+```
+hostname                                        # same name as before
+ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub # same SHA256: fingerprint as before
+cd ~/flop/validator-cs-be91fe83
+node preflight.mjs
+pnpm install --frozen-lockfile --ignore-scripts
+```
+- **Do NOT run `pnpm onboard prepare` again.** That would create a new account. Your existing `account.json` and `.env` are already restored.
+
+### Step 5: Tell ops, then clean up
+Send your ops contact something like:
+```
+I've moved <hostname> to a new server at <NEW_IP>.
+Same SS58: <your SS58>
+Same host-key fingerprint: SHA256:<...>
+Old server is stopped.
+```
+Then:
+```
+rm -f /root/validator-backup.tgz        # on BOTH servers
+```
+And wipe `~/flop` on the old server or destroy the old instance.
+
+After that, carry on from Section 4️⃣ (wait for ops → join → verify) as normal.
+
+> 💡 **Moving the GPU miner too?** Same idea. Bundle `/opt/flop-miner` (includes `miner.env`, `signer`, `session-keys`) instead of `~/flop`. Let in-flight sessions finish first, and never run the same miner key on two machines.
 
 
 -----------
